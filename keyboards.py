@@ -51,6 +51,75 @@ def habits_keyboard(habits: List[dict], lang: str = "kk", action: str = "view") 
     return builder.as_markup()
 
 
+def habits_categories_keyboard(categories: List[dict], habits: List[dict], lang: str = "kk") -> InlineKeyboardMarkup:
+    """Keyboard with categories for habit filtering. Shows habit count per category."""
+    builder = InlineKeyboardBuilder()
+
+    for cat in categories:
+        # Count habits in this category
+        count = sum(1 for h in habits if h.get('category_id') == cat['id'])
+        text = f"{cat['icon']} {cat['name']} ({count})"
+        builder.row(InlineKeyboardButton(
+            text=text,
+            callback_data=f"habits_cat_{cat['id']}"
+        ))
+
+    # Habits without category
+    no_cat_count = sum(1 for h in habits if h.get('category_id') is None)
+    if no_cat_count > 0:
+        no_cat_text = get_text("no_category", lang) if lang else "Без категории"
+        builder.row(InlineKeyboardButton(
+            text=f"📌 {no_cat_text} ({no_cat_count})",
+            callback_data="habits_cat_none"
+        ))
+
+    # Show all habits button
+    all_habits_text = "📋 Все привычки" if lang == "ru" else "📋 Барлық әдеттер"
+    builder.row(InlineKeyboardButton(
+        text=f"{all_habits_text} ({len(habits)})",
+        callback_data="habits_cat_all"
+    ))
+
+    builder.row(InlineKeyboardButton(
+        text=get_text("btn_create_habit", lang),
+        callback_data="habit_create"
+    ))
+    builder.row(InlineKeyboardButton(
+        text=get_text("btn_back", lang),
+        callback_data="back_to_menu"
+    ))
+
+    return builder.as_markup()
+
+
+def habits_in_category_keyboard(habits: List[dict], category_id: Optional[int], lang: str = "kk") -> InlineKeyboardMarkup:
+    """Keyboard with habits filtered by category."""
+    builder = InlineKeyboardBuilder()
+
+    for habit in habits:
+        icon = "✅" if habit.get('completed_today') else "⬜"
+        streak_icon = f"🔥{habit['streak']}" if habit['streak'] > 0 else ""
+        text = f"{icon} {habit['name']} {streak_icon}"
+        builder.row(InlineKeyboardButton(
+            text=text,
+            callback_data=f"habit_view_{habit['id']}"
+        ))
+
+    builder.row(InlineKeyboardButton(
+        text=get_text("btn_create_habit", lang),
+        callback_data="habit_create"
+    ))
+
+    # Back to categories
+    back_text = "« Категории" if lang == "ru" else "« Санаттар"
+    builder.row(InlineKeyboardButton(
+        text=back_text,
+        callback_data="back_to_habits"
+    ))
+
+    return builder.as_markup()
+
+
 def habit_detail_keyboard(habit: dict, lang: str = "kk", is_marathon: bool = False) -> InlineKeyboardMarkup:
     """Detail view of a habit."""
     builder = InlineKeyboardBuilder()

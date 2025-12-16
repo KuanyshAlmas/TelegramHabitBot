@@ -292,6 +292,35 @@ async def get_user_habits(user_id: int, active_only: bool = True) -> List[dict]:
         return [dict(row) for row in rows]
 
 
+async def get_habits_by_category(user_id: int, category_id: Optional[int], active_only: bool = True) -> List[dict]:
+    """Get habits for a user filtered by category."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        if category_id is None:
+            query = "SELECT * FROM habits WHERE user_id = ? AND category_id IS NULL"
+        else:
+            query = "SELECT * FROM habits WHERE user_id = ? AND category_id = ?"
+        if active_only:
+            query += " AND is_active = 1"
+        query += " ORDER BY name"
+
+        if category_id is None:
+            cursor = await db.execute(query, (user_id,))
+        else:
+            cursor = await db.execute(query, (user_id, category_id))
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def get_category(category_id: int) -> Optional[dict]:
+    """Get a single category by ID."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM categories WHERE id = ?", (category_id,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
 async def get_habit(habit_id: int) -> Optional[dict]:
     """Get a single habit."""
     async with aiosqlite.connect(DB_PATH) as db:

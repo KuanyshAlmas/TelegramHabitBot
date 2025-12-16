@@ -18,7 +18,7 @@ from keyboards import (
     settings_keyboard, stats_period_keyboard, stats_habits_keyboard,
     calendar_keyboard, marathons_menu_keyboard, marathon_detail_keyboard,
     log_habits_keyboard, marathon_add_habit_keyboard, cancel_keyboard,
-    language_keyboard
+    language_keyboard, habits_categories_keyboard, habits_in_category_keyboard
 )
 from texts import get_text, get_menu_buttons
 
@@ -155,9 +155,10 @@ async def cancel_input(callback: CallbackQuery, state: FSMContext):
 # ============ Habits ============
 @router.message(F.text.in_({"📝 Мои привычки", "📝 Менің әдеттерім"}))
 async def show_habits(message: Message):
-    """Show user's habits."""
+    """Show categories first, then habits when category is selected."""
     lang = await db.get_user_language(message.from_user.id)
     habits = await db.get_user_habits(message.from_user.id)
+    categories = await db.get_user_categories(message.from_user.id)
 
     # Add completion status for today
     for habit in habits:
@@ -166,30 +167,91 @@ async def show_habits(message: Message):
 
     if not habits:
         text = get_text("no_habits", lang)
+        await message.answer(
+            text,
+            reply_markup=habits_keyboard(habits, lang),
+            parse_mode="Markdown"
+        )
     else:
+        # Show categories with habit counts
         text = get_text("your_habits", lang)
+        text += "\n\n"
+        select_cat_text = "Выбери категорию:" if lang == "ru" else "Санатты таңда:"
+        text += select_cat_text
 
-    await message.answer(
-        text,
-        reply_markup=habits_keyboard(habits, lang),
-        parse_mode="Markdown"
-    )
+        await message.answer(
+            text,
+            reply_markup=habits_categories_keyboard(categories, habits, lang),
+            parse_mode="Markdown"
+        )
 
 
 @router.callback_query(F.data == "back_to_habits")
 async def back_to_habits(callback: CallbackQuery, state: FSMContext):
-    """Return to habits list."""
+    """Return to categories list (habits filter)."""
     await state.clear()
     lang = await db.get_user_language(callback.from_user.id)
 
     habits = await db.get_user_habits(callback.from_user.id)
+    categories = await db.get_user_categories(callback.from_user.id)
+
     for habit in habits:
         log = await db.get_daily_log(habit['id'])
         habit['completed_today'] = log['completed'] if log else False
 
+    text = get_text("your_habits_short", lang)
+    text += "\n\n"
+    select_cat_text = "Выбери категорию:" if lang == "ru" else "Санатты таңда:"
+    text += select_cat_text
+
     await callback.message.edit_text(
-        get_text("your_habits_short", lang),
-        reply_markup=habits_keyboard(habits, lang),
+        text,
+        reply_markup=habits_categories_keyboard(categories, habits, lang),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("habits_cat_"))
+async def show_habits_in_category(callback: CallbackQuery):
+    """Show habits filtered by category."""
+    lang = await db.get_user_language(callback.from_user.id)
+    cat_id_str = callback.data.replace("habits_cat_", "")
+
+    if cat_id_str == "all":
+        # Show all habits
+        habits = await db.get_user_habits(callback.from_user.id)
+        title = "📋 Все привычки:" if lang == "ru" else "📋 Барлық әдеттер:"
+        category_id = None
+    elif cat_id_str == "none":
+        # Habits without category
+        habits = await db.get_habits_by_category(callback.from_user.id, None)
+        title = "📌 Без категории:" if lang == "ru" else "📌 Санатсыз:"
+        category_id = None
+    else:
+        # Specific category
+        category_id = int(cat_id_str)
+        habits = await db.get_habits_by_category(callback.from_user.id, category_id)
+        category = await db.get_category(category_id)
+        if category:
+            title = f"{category['icon']} {category['name']}:"
+        else:
+            title = "Привычки:"
+
+    # Add completion status
+    for habit in habits:
+        log = await db.get_daily_log(habit['id'])
+        habit['completed_today'] = log['completed'] if log else False
+
+    if not habits:
+        empty_text = "В этой категории пока нет привычек." if lang == "ru" else "Бұл санатта әдеттер жоқ."
+        text = f"{title}\n\n_{empty_text}_"
+    else:
+        text = title
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=habits_in_category_keyboard(habits, category_id, lang),
         parse_mode="Markdown"
     )
     await callback.answer()

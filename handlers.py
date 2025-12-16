@@ -1842,20 +1842,11 @@ async def finalize_marathon_from_callback(callback: CallbackQuery, state: FSMCon
 async def view_marathon(callback: CallbackQuery):
     """View marathon details."""
     marathon_id = int(callback.data.split("_")[2])
-    marathon = await db.get_marathon_by_code(
-        (await db.get_user_marathons(callback.from_user.id))[0]['invite_code']
-    )
-
     # Get marathon directly
-    async with aiosqlite.connect(db.DB_PATH) as conn:
-        conn.row_factory = aiosqlite.Row
-        cursor = await conn.execute(
-            "SELECT * FROM marathons WHERE id = ?", (marathon_id,)
-        )
-        marathon = dict(await cursor.fetchone())
+    marathon = await db.get_marathon_by_id(marathon_id)
 
-    start = date.fromisoformat(marathon['start_date'])
-    end = date.fromisoformat(marathon['end_date'])
+    start = marathon['start_date'] if isinstance(marathon['start_date'], date) else date.fromisoformat(str(marathon['start_date']))
+    end = marathon['end_date'] if isinstance(marathon['end_date'], date) else date.fromisoformat(str(marathon['end_date']))
     today = date.today()
 
     if today < start:
@@ -1910,15 +1901,11 @@ async def invite_to_marathon(callback: CallbackQuery):
     """Show invite link."""
     marathon_id = int(callback.data.split("_")[2])
 
-    async with aiosqlite.connect(db.DB_PATH) as conn:
-        cursor = await conn.execute(
-            "SELECT invite_code, name FROM marathons WHERE id = ?", (marathon_id,)
-        )
-        row = await cursor.fetchone()
+    marathon = await db.get_marathon_by_id(marathon_id)
 
-    if row:
+    if marathon:
         bot_info = await callback.bot.get_me()
-        invite_link = f"https://t.me/{bot_info.username}?start=marathon_{row[0]}"
+        invite_link = f"https://t.me/{bot_info.username}?start=marathon_{marathon['invite_code']}"
 
         await callback.message.answer(invite_link, parse_mode=None)
 
@@ -1973,25 +1960,10 @@ async def manage_marathon_user(callback: CallbackQuery):
     marathon = await db.get_marathon_by_id(marathon_id)
 
     # Get user info
-    async with aiosqlite.connect(db.DB_PATH) as conn:
-        conn.row_factory = aiosqlite.Row
-        cursor = await conn.execute(
-            """SELECT u.first_name, u.username, mp.total_points, mp.joined_at
-               FROM users u
-               JOIN marathon_participants mp ON u.user_id = mp.user_id
-               WHERE mp.marathon_id = ? AND mp.user_id = ?""",
-            (marathon_id, user_id)
-        )
-        user = await cursor.fetchone()
+    user = await db.get_marathon_participant_info(marathon_id, user_id)
 
-        # Get user's habits for this marathon
-        cursor = await conn.execute(
-            """SELECT h.name, h.daily_goal, h.unit, h.streak
-               FROM habits h
-               WHERE h.user_id = ? AND h.marathon_id = ?""",
-            (user_id, marathon_id)
-        )
-        habits = await cursor.fetchall()
+    # Get user's habits for this marathon
+    habits = await db.get_user_marathon_habits(user_id, marathon_id)
 
     if not user:
         await callback.answer("Пользователь не найден", show_alert=True)
@@ -1999,9 +1971,10 @@ async def manage_marathon_user(callback: CallbackQuery):
 
     name = user['first_name'] or user['username'] or f"User {user_id}"
 
+    joined_at = str(user['joined_at'])[:10] if user['joined_at'] else ""
     text = f"👤 **{name}**\n\n"
     text += f"📊 Баллов: {user['total_points']}\n"
-    text += f"📅 Присоединился: {user['joined_at'][:10]}\n\n"
+    text += f"📅 Присоединился: {joined_at}\n\n"
 
     if habits:
         text += "**Привычки:**\n"
@@ -2300,6 +2273,3 @@ async def admin_broadcast_send(message: Message, state: FSMContext):
         f"❌ Ошибок: **{failed}**",
         parse_mode="Markdown"
     )
-
-
-import aiosqlite

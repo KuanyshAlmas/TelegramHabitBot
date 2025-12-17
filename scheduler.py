@@ -57,16 +57,16 @@ async def send_habit_notification(user_id: int, habit: dict):
 
         keyboard = notification_response_keyboard(habit['id'], habit_type, lang)
 
-        await bot_instance.send_message(
+        msg = await bot_instance.send_message(
             user_id,
             text,
             reply_markup=keyboard,
             parse_mode="Markdown"
         )
 
-        # Create pending notification with 10-min expiry
+        # Create pending notification with 10-min expiry (store message_id for deletion)
         expires_at = datetime.now(KZ_TZ) + timedelta(minutes=10)
-        await db.create_pending_notification(user_id, habit['id'], expires_at)
+        await db.create_pending_notification(user_id, habit['id'], expires_at, msg.message_id, user_id)
 
     except Exception as e:
         print(f"Error sending notification to {user_id}: {e}")
@@ -93,23 +93,21 @@ async def check_notifications_for_time(check_time: str):
 
 
 async def check_expired_notifications():
-    """Check for expired notifications and log zeros."""
+    """Check for expired notifications and delete messages."""
     expired = await db.get_expired_notifications()
 
     for notif in expired:
         try:
+            # Delete the notification message to keep chat clean
+            if bot_instance and notif.get('message_id') and notif.get('chat_id'):
+                try:
+                    await bot_instance.delete_message(notif['chat_id'], notif['message_id'])
+                except Exception:
+                    pass  # Message may already be deleted
+
             # Log zero for this habit
             await db.log_habit(notif['habit_id'], notif['user_id'], 0)
 
-            # Notify user
-            habit = await db.get_habit(notif['habit_id'])
-            if bot_instance and habit:
-                await bot_instance.send_message(
-                    notif['user_id'],
-                    f"⏳ Время вышло для **{habit['name']}**.\n"
-                    f"Засчитан 0. Ты можешь внести результат вручную позже.",
-                    parse_mode="Markdown"
-                )
         except Exception as e:
             print(f"Error processing expired notification: {e}")
 

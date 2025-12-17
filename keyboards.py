@@ -203,6 +203,17 @@ def boolean_input_keyboard(habit_id: int, lang: str = "kk") -> InlineKeyboardMar
     return builder.as_markup()
 
 
+def comment_keyboard(habit_id: int, lang: str = "kk") -> InlineKeyboardMarkup:
+    """Keyboard for optional comment after logging."""
+    builder = InlineKeyboardBuilder()
+    skip_text = "⏭ Пропустить" if lang == "ru" else "⏭ Өткізіп жіберу"
+    builder.row(InlineKeyboardButton(
+        text=skip_text,
+        callback_data=f"skip_comment_{habit_id}"
+    ))
+    return builder.as_markup()
+
+
 def numeric_quick_input_keyboard(habit_id: int, lang: str = "kk", unit: str = "") -> InlineKeyboardMarkup:
     """Quick numeric input buttons."""
     builder = InlineKeyboardBuilder()

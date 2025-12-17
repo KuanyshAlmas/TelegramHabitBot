@@ -80,6 +80,7 @@ async def init_db():
                 log_date DATE NOT NULL,
                 value REAL DEFAULT 0,
                 completed INTEGER DEFAULT 0,
+                comment TEXT,
                 logged_at TIMESTAMP DEFAULT NOW(),
                 UNIQUE(habit_id, log_date)
             )
@@ -91,11 +92,24 @@ async def init_db():
                 id SERIAL PRIMARY KEY,
                 user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
                 habit_id INTEGER NOT NULL REFERENCES habits(id) ON DELETE CASCADE,
+                message_id BIGINT,
+                chat_id BIGINT,
                 sent_at TIMESTAMP NOT NULL,
                 expires_at TIMESTAMP NOT NULL,
                 responded INTEGER DEFAULT 0
             )
         """)
+
+        # Add new columns if they don't exist (migration)
+        try:
+            await conn.execute("ALTER TABLE habit_logs ADD COLUMN IF NOT EXISTS comment TEXT")
+        except:
+            pass
+        try:
+            await conn.execute("ALTER TABLE pending_notifications ADD COLUMN IF NOT EXISTS message_id BIGINT")
+            await conn.execute("ALTER TABLE pending_notifications ADD COLUMN IF NOT EXISTS chat_id BIGINT")
+        except:
+            pass
 
         # Marathon participants
         await conn.execute("""
@@ -381,6 +395,30 @@ async def get_daily_log(habit_id: int, log_date: date = None) -> Optional[dict]:
         return dict(row) if row else None
 
 
+async def update_log_comment(habit_id: int, comment: str, log_date: date = None):
+    """Update comment on a habit log."""
+    if log_date is None:
+        log_date = date.today()
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE habit_logs SET comment = $1 WHERE habit_id = $2 AND log_date = $3",
+            comment, habit_id, log_date
+        )
+
+
+async def get_last_comment(habit_id: int) -> Optional[str]:
+    """Get the last comment for a habit."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """SELECT comment FROM habit_logs
+               WHERE habit_id = $1 AND comment IS NOT NULL AND comment != ''
+               ORDER BY log_date DESC LIMIT 1""",
+            habit_id
+        )
+        return row['comment'] if row else None
+
+
 async def get_user_daily_logs(user_id: int, log_date: date = None) -> List[dict]:
     """Get all logs for a user on a specific date."""
     if log_date is None:
@@ -434,13 +472,13 @@ async def update_streak(habit_id: int, completed: bool):
 
 # ============ PENDING NOTIFICATION FUNCTIONS ============
 
-async def create_pending_notification(user_id: int, habit_id: int, expires_at: datetime):
+async def create_pending_notification(user_id: int, habit_id: int, expires_at: datetime, message_id: int = None, chat_id: int = None):
     """Create a pending notification."""
     async with pool.acquire() as conn:
         await conn.execute(
-            """INSERT INTO pending_notifications (user_id, habit_id, sent_at, expires_at)
-               VALUES ($1, $2, $3, $4)""",
-            user_id, habit_id, datetime.now(), expires_at
+            """INSERT INTO pending_notifications (user_id, habit_id, sent_at, expires_at, message_id, chat_id)
+               VALUES ($1, $2, $3, $4, $5, $6)""",
+            user_id, habit_id, datetime.now(), expires_at, message_id, chat_id
         )
 
 

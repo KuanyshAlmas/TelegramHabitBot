@@ -18,7 +18,8 @@ from keyboards import (
     settings_keyboard, stats_period_keyboard, stats_habits_keyboard,
     calendar_keyboard, marathons_menu_keyboard, marathon_detail_keyboard,
     log_habits_keyboard, marathon_add_habit_keyboard, cancel_keyboard,
-    language_keyboard, habits_categories_keyboard, habits_in_category_keyboard
+    language_keyboard, habits_categories_keyboard, habits_in_category_keyboard,
+    comment_keyboard
 )
 from texts import get_text, get_menu_buttons
 
@@ -41,6 +42,7 @@ class HabitStates(StatesGroup):
     waiting_unit = State()
     waiting_category = State()
     waiting_custom_value = State()
+    waiting_comment = State()
 
 
 class CategoryStates(StatesGroup):
@@ -636,13 +638,24 @@ async def log_boolean(callback: CallbackQuery, state: FSMContext):
     result = await db.log_habit(habit_id, callback.from_user.id, value)
     await db.mark_notification_responded(callback.from_user.id, habit_id)
 
+    lang = await db.get_user_language(callback.from_user.id)
     status = "✅ Выполнено" if value else "❌ Не выполнено"
+
+    # Get last comment if exists
+    last_comment = await db.get_last_comment(habit_id)
+    last_comment_text = f"\n\n📝 Прошлая заметка: _{last_comment}_" if last_comment else ""
+
+    comment_prompt = "Добавить заметку? (напр. стр. 150)" if lang == "ru" else "Жазба қосу? (мыс. бет 150)"
+
     await callback.message.edit_text(
         f"Принято! {status}\n\n"
-        f"**{result['habit']['name']}**",
+        f"**{result['habit']['name']}**{last_comment_text}\n\n"
+        f"💬 {comment_prompt}",
+        reply_markup=comment_keyboard(habit_id, lang),
         parse_mode="Markdown"
     )
-    await state.clear()
+    await state.update_data(comment_habit_id=habit_id)
+    await state.set_state(HabitStates.waiting_comment)
     await callback.answer("Записано!")
 
 
@@ -656,18 +669,29 @@ async def log_numeric(callback: CallbackQuery, state: FSMContext):
     result = await db.log_habit(habit_id, callback.from_user.id, value)
     await db.mark_notification_responded(callback.from_user.id, habit_id)
 
+    lang = await db.get_user_language(callback.from_user.id)
     habit = result['habit']
     new_value = result['new_value']
     goal = result['daily_goal']
     unit = habit.get('unit', '')
 
     status = "✅" if new_value >= goal else ""
+
+    # Get last comment if exists
+    last_comment = await db.get_last_comment(habit_id)
+    last_comment_text = f"\n\n📝 Прошлая заметка: _{last_comment}_" if last_comment else ""
+
+    comment_prompt = "Добавить заметку? (напр. стр. 150)" if lang == "ru" else "Жазба қосу? (мыс. бет 150)"
+
     await callback.message.edit_text(
         f"Принято +{value} {unit}!\n\n"
-        f"**{habit['name']}**: {new_value}/{goal} {unit} {status}",
+        f"**{habit['name']}**: {new_value}/{goal} {unit} {status}{last_comment_text}\n\n"
+        f"💬 {comment_prompt}",
+        reply_markup=comment_keyboard(habit_id, lang),
         parse_mode="Markdown"
     )
-    await state.clear()
+    await state.update_data(comment_habit_id=habit_id)
+    await state.set_state(HabitStates.waiting_comment)
     await callback.answer(f"+{value} {unit}")
 
 
@@ -699,21 +723,57 @@ async def log_custom_value(message: Message, state: FSMContext):
         result = await db.log_habit(habit_id, message.from_user.id, value)
         await db.mark_notification_responded(message.from_user.id, habit_id)
 
+        lang = await db.get_user_language(message.from_user.id)
         habit = result['habit']
         new_value = result['new_value']
         goal = result['daily_goal']
         unit = habit.get('unit', '')
 
         status = "✅" if new_value >= goal else ""
+
+        # Get last comment if exists
+        last_comment = await db.get_last_comment(habit_id)
+        last_comment_text = f"\n\n📝 Прошлая заметка: _{last_comment}_" if last_comment else ""
+
+        comment_prompt = "Добавить заметку? (напр. стр. 150)" if lang == "ru" else "Жазба қосу? (мыс. бет 150)"
+
         await message.answer(
             f"Принято +{value} {unit}!\n\n"
-            f"**{habit['name']}**: {new_value}/{goal} {unit} {status}",
+            f"**{habit['name']}**: {new_value}/{goal} {unit} {status}{last_comment_text}\n\n"
+            f"💬 {comment_prompt}",
+            reply_markup=comment_keyboard(habit_id, lang),
             parse_mode="Markdown"
         )
-        await state.clear()
+        await state.update_data(comment_habit_id=habit_id)
+        await state.set_state(HabitStates.waiting_comment)
 
     except ValueError:
         await message.answer("Пожалуйста, введи число. Например: 2.5")
+
+
+# ============ Comment Handlers ============
+@router.callback_query(F.data.startswith("skip_comment_"))
+async def skip_comment(callback: CallbackQuery, state: FSMContext):
+    """Skip adding comment."""
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await state.clear()
+    await callback.answer("OK!")
+
+
+@router.message(HabitStates.waiting_comment)
+async def save_comment(message: Message, state: FSMContext):
+    """Save comment for the habit log."""
+    data = await state.get_data()
+    habit_id = data.get('comment_habit_id')
+
+    if habit_id:
+        await db.update_log_comment(habit_id, message.text)
+
+        lang = await db.get_user_language(message.from_user.id)
+        saved_text = "📝 Заметка сохранена!" if lang == "ru" else "📝 Жазба сақталды!"
+        await message.answer(saved_text)
+
+    await state.clear()
 
 
 # ============ Notification Response ============

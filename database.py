@@ -408,15 +408,21 @@ async def update_log_comment(habit_id: int, comment: str, log_date: date = None)
 
 
 async def get_last_comment(habit_id: int) -> Optional[str]:
-    """Get the last comment for a habit."""
+    """Get the last comment for a habit (for backwards compatibility)."""
+    comments = await get_last_comments(habit_id, limit=1)
+    return comments[0]['comment'] if comments else None
+
+
+async def get_last_comments(habit_id: int, limit: int = 3) -> List[dict]:
+    """Get the last N comments for a habit with dates."""
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """SELECT comment FROM habit_logs
+        rows = await conn.fetch(
+            """SELECT comment, log_date FROM habit_logs
                WHERE habit_id = $1 AND comment IS NOT NULL AND comment != ''
-               ORDER BY log_date DESC LIMIT 1""",
-            habit_id
+               ORDER BY log_date DESC LIMIT $2""",
+            habit_id, limit
         )
-        return row['comment'] if row else None
+        return [dict(row) for row in rows]
 
 
 async def get_user_daily_logs(user_id: int, log_date: date = None) -> List[dict]:

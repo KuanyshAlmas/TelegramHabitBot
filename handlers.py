@@ -397,7 +397,6 @@ async def view_habit(callback: CallbackQuery):
 
     log = await db.get_daily_log(habit_id)
     today_value = log['value'] if log else 0
-    today_comment = log.get('comment') if log else None
 
     if habit['habit_type'] == 'boolean':
         status = "✅ Выполнено" if log and log['completed'] else "⬜ Не выполнено"
@@ -410,11 +409,16 @@ async def view_habit(callback: CallbackQuery):
         text += f"Цель: {habit['daily_goal']} {habit['unit']}\n"
         text += f"Сегодня: {today_value}/{habit['daily_goal']} {habit['unit']}\n"
 
-    # Show today's comment if exists
-    if today_comment:
-        text += f"\n📝 Заметка: _{today_comment}_"
+    # Show last 3 comments
+    last_comments = await db.get_last_comments(habit_id, limit=3)
+    if last_comments:
+        text += "\n📝 **Заметки:**\n"
+        for c in last_comments:
+            log_date = c['log_date']
+            date_str = log_date.strftime("%d.%m") if hasattr(log_date, 'strftime') else str(log_date)[:5]
+            text += f"• {date_str}: _{c['comment']}_\n"
 
-    text += f"\n\n🔥 Страйк: {habit['streak']} дней"
+    text += f"\n🔥 Страйк: {habit['streak']} дней"
     text += f"\n🏆 Рекорд: {habit['max_streak']} дней"
 
     is_marathon = habit.get('marathon_id') is not None

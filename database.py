@@ -503,8 +503,7 @@ async def get_expired_notifications() -> List[dict]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """SELECT * FROM pending_notifications
-               WHERE responded = 0 AND expires_at < $1""",
-            datetime.now()
+               WHERE responded = 0 AND expires_at < NOW()"""
         )
         return [dict(row) for row in rows]
 
@@ -513,9 +512,20 @@ async def delete_expired_notifications():
     """Delete processed expired notifications."""
     async with pool.acquire() as conn:
         await conn.execute(
-            "DELETE FROM pending_notifications WHERE responded = 1 OR expires_at < $1",
-            datetime.now()
+            "DELETE FROM pending_notifications WHERE responded = 1 OR expires_at < NOW()"
         )
+
+
+async def get_notification_for_deletion(user_id: int) -> Optional[dict]:
+    """Get pending notification for user to delete the message."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """SELECT message_id, chat_id FROM pending_notifications
+               WHERE user_id = $1 AND responded = 0
+               ORDER BY sent_at DESC LIMIT 1""",
+            user_id
+        )
+        return dict(row) if row else None
 
 
 # ============ MARATHON FUNCTIONS ============

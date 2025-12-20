@@ -34,6 +34,16 @@ def is_menu_button(text: str) -> bool:
     return text in get_menu_buttons("kk") or text in get_menu_buttons("ru")
 
 
+async def delete_notification_message(bot, user_id: int):
+    """Delete pending notification message when user responds."""
+    try:
+        notif = await db.get_notification_for_deletion(user_id)
+        if notif and notif.get('message_id') and notif.get('chat_id'):
+            await bot.delete_message(notif['chat_id'], notif['message_id'])
+    except Exception:
+        pass  # Message may already be deleted
+
+
 # ============ FSM States ============
 class HabitStates(StatesGroup):
     waiting_name = State()
@@ -178,8 +188,7 @@ async def show_habits(message: Message):
         # Show categories with habit counts
         text = get_text("your_habits", lang)
         text += "\n\n"
-        select_cat_text = "Выбери категорию:" if lang == "ru" else "Санатты таңда:"
-        text += select_cat_text
+        text += get_text("select_category_filter", lang)
 
         await message.answer(
             text,
@@ -203,8 +212,7 @@ async def back_to_habits(callback: CallbackQuery, state: FSMContext):
 
     text = get_text("your_habits_short", lang)
     text += "\n\n"
-    select_cat_text = "Выбери категорию:" if lang == "ru" else "Санатты таңда:"
-    text += select_cat_text
+    text += get_text("select_category_filter", lang)
 
     await callback.message.edit_text(
         text,
@@ -223,12 +231,12 @@ async def show_habits_in_category(callback: CallbackQuery):
     if cat_id_str == "all":
         # Show all habits
         habits = await db.get_user_habits(callback.from_user.id)
-        title = "📋 Все привычки:" if lang == "ru" else "📋 Барлық әдеттер:"
+        title = get_text("all_habits_title", lang)
         category_id = None
     elif cat_id_str == "none":
         # Habits without category
         habits = await db.get_habits_by_category(callback.from_user.id, None)
-        title = "📌 Без категории:" if lang == "ru" else "📌 Санатсыз:"
+        title = get_text("no_category_title", lang)
         category_id = None
     else:
         # Specific category
@@ -238,7 +246,7 @@ async def show_habits_in_category(callback: CallbackQuery):
         if category:
             title = f"{category['icon']} {category['name']}:"
         else:
-            title = "Привычки:"
+            title = get_text("habits_title", lang)
 
     # Add completion status
     for habit in habits:
@@ -246,7 +254,7 @@ async def show_habits_in_category(callback: CallbackQuery):
         habit['completed_today'] = log['completed'] if log else False
 
     if not habits:
-        empty_text = "В этой категории пока нет привычек." if lang == "ru" else "Бұл санатта әдеттер жоқ."
+        empty_text = get_text("no_habits_in_category", lang)
         text = f"{title}\n\n_{empty_text}_"
     else:
         text = title
@@ -262,10 +270,10 @@ async def show_habits_in_category(callback: CallbackQuery):
 @router.callback_query(F.data == "habit_create")
 async def start_create_habit(callback: CallbackQuery, state: FSMContext):
     """Start habit creation flow."""
+    lang = await db.get_user_language(callback.from_user.id)
     await callback.message.edit_text(
-        "Давай создадим новую привычку! 🎯\n\n"
-        "Введи название привычки:",
-        reply_markup=cancel_keyboard()
+        get_text("create_habit_start", lang),
+        reply_markup=cancel_keyboard(lang)
     )
     await state.set_state(HabitStates.waiting_name)
     await callback.answer()
@@ -274,15 +282,15 @@ async def start_create_habit(callback: CallbackQuery, state: FSMContext):
 @router.message(HabitStates.waiting_name)
 async def habit_name_received(message: Message, state: FSMContext):
     """Receive habit name."""
+    lang = await db.get_user_language(message.from_user.id)
     if message.text and is_menu_button(message.text):
-        await message.answer("Введи название привычки:")
+        await message.answer(get_text("enter_habit_name", lang))
         return
 
     await state.update_data(name=message.text)
     await message.answer(
-        f"Отлично! Привычка: **{message.text}**\n\n"
-        "Выбери тип привычки:",
-        reply_markup=habit_type_keyboard(),
+        get_text("habit_name_received", lang, name=message.text),
+        reply_markup=habit_type_keyboard(lang),
         parse_mode="Markdown"
     )
     await state.set_state(HabitStates.waiting_type)
@@ -291,6 +299,7 @@ async def habit_name_received(message: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("type_"), HabitStates.waiting_type)
 async def habit_type_selected(callback: CallbackQuery, state: FSMContext):
     """Receive habit type."""
+    lang = await db.get_user_language(callback.from_user.id)
     habit_type = callback.data.split("_")[1]
     await state.update_data(habit_type=habit_type)
 
@@ -300,14 +309,13 @@ async def habit_type_selected(callback: CallbackQuery, state: FSMContext):
 
         categories = await db.get_user_categories(callback.from_user.id)
         await callback.message.edit_text(
-            "Выбери категорию для привычки:",
-            reply_markup=categories_keyboard(categories, "select")
+            get_text("select_category", lang),
+            reply_markup=categories_keyboard(categories, lang, "select")
         )
         await state.set_state(HabitStates.waiting_category)
     else:
         await callback.message.edit_text(
-            "Введи дневную цель (число):\n"
-            "Например: 3 (литра воды), 50 (страниц)",
+            get_text("enter_daily_goal", lang),
             reply_markup=None
         )
         await state.set_state(HabitStates.waiting_goal)
@@ -318,30 +326,30 @@ async def habit_type_selected(callback: CallbackQuery, state: FSMContext):
 @router.message(HabitStates.waiting_goal)
 async def habit_goal_received(message: Message, state: FSMContext):
     """Receive daily goal."""
+    lang = await db.get_user_language(message.from_user.id)
     try:
         goal = float(message.text.replace(",", "."))
         await state.update_data(daily_goal=goal)
 
         await message.answer(
-            f"Цель: **{goal}**\n\n"
-            "Введи единицу измерения:\n"
-            "Например: литров, страниц, минут, км",
+            get_text("goal_set", lang, goal=goal),
             parse_mode="Markdown"
         )
         await state.set_state(HabitStates.waiting_unit)
     except ValueError:
-        await message.answer("Пожалуйста, введи число. Например: 3 или 2.5")
+        await message.answer(get_text("enter_number", lang))
 
 
 @router.message(HabitStates.waiting_unit)
 async def habit_unit_received(message: Message, state: FSMContext):
     """Receive unit."""
+    lang = await db.get_user_language(message.from_user.id)
     await state.update_data(unit=message.text)
 
     categories = await db.get_user_categories(message.from_user.id)
     await message.answer(
-        "Выбери категорию для привычки:",
-        reply_markup=categories_keyboard(categories, "select")
+        get_text("select_category", lang),
+        reply_markup=categories_keyboard(categories, lang, "select")
     )
     await state.set_state(HabitStates.waiting_category)
 
@@ -349,6 +357,7 @@ async def habit_unit_received(message: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("cat_select_"), HabitStates.waiting_category)
 async def habit_category_selected(callback: CallbackQuery, state: FSMContext):
     """Receive category and create habit."""
+    lang = await db.get_user_language(callback.from_user.id)
     cat_id = callback.data.split("_")[2]
     category_id = None if cat_id == "none" else int(cat_id)
 
@@ -365,17 +374,16 @@ async def habit_category_selected(callback: CallbackQuery, state: FSMContext):
 
     await state.clear()
 
-    type_text = "Галочка" if data['habit_type'] == 'boolean' else f"Цель: {data['daily_goal']} {data.get('unit', '')}"
+    if data['habit_type'] == 'boolean':
+        type_text = get_text("habit_type_checkbox", lang)
+    else:
+        type_text = get_text("habit_type_goal", lang, goal=data['daily_goal'], unit=data.get('unit', ''))
 
     await callback.message.edit_text(
-        f"✅ Привычка создана!\n\n"
-        f"**{data['name']}**\n"
-        f"Тип: {type_text}\n\n"
-        f"Теперь я буду напоминать тебе о ней!",
+        get_text("habit_created", lang, name=data['name'], type=type_text),
         parse_mode="Markdown"
     )
 
-    lang = await db.get_user_language(callback.from_user.id)
     habits = await db.get_user_habits(callback.from_user.id)
     await callback.message.answer(
         get_text("your_habits_short", lang),
@@ -388,43 +396,44 @@ async def habit_category_selected(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("habit_view_"))
 async def view_habit(callback: CallbackQuery):
     """View habit details."""
+    lang = await db.get_user_language(callback.from_user.id)
     habit_id = int(callback.data.split("_")[2])
     habit = await db.get_habit(habit_id)
 
     if not habit:
-        await callback.answer("Привычка не найдена", show_alert=True)
+        await callback.answer(get_text("habit_not_found", lang), show_alert=True)
         return
 
     log = await db.get_daily_log(habit_id)
     today_value = log['value'] if log else 0
 
     if habit['habit_type'] == 'boolean':
-        status = "✅ Выполнено" if log and log['completed'] else "⬜ Не выполнено"
+        status = get_text("completed", lang) if log and log['completed'] else get_text("not_completed", lang)
         text = f"**{habit['name']}**\n\n"
-        text += f"Тип: Галочка (да/нет)\n"
-        text += f"Сегодня: {status}\n"
+        text += get_text("type_checkbox", lang) + "\n"
+        text += get_text("today_label", lang, value=status) + "\n"
     else:
         text = f"**{habit['name']}**\n\n"
-        text += f"Тип: Цифровая\n"
-        text += f"Цель: {habit['daily_goal']} {habit['unit']}\n"
-        text += f"Сегодня: {today_value}/{habit['daily_goal']} {habit['unit']}\n"
+        text += get_text("type_numeric_label", lang) + "\n"
+        text += get_text("goal_label", lang, goal=habit['daily_goal'], unit=habit['unit']) + "\n"
+        text += get_text("today_label", lang, value=f"{today_value}/{habit['daily_goal']} {habit['unit']}") + "\n"
 
     # Show last 3 comments
     last_comments = await db.get_last_comments(habit_id, limit=3)
     if last_comments:
-        text += "\n📝 **Заметки:**\n"
+        text += "\n" + get_text("notes_label", lang) + "\n"
         for c in last_comments:
             log_date = c['log_date']
             date_str = log_date.strftime("%d.%m") if hasattr(log_date, 'strftime') else str(log_date)[:5]
             text += f"• {date_str}: _{c['comment']}_\n"
 
-    text += f"\n🔥 Страйк: {habit['streak']} дней"
-    text += f"\n🏆 Рекорд: {habit['max_streak']} дней"
+    text += f"\n" + get_text("streak_label", lang, streak=habit['streak'])
+    text += f"\n" + get_text("record_days", lang, max_streak=habit['max_streak'])
 
     is_marathon = habit.get('marathon_id') is not None
     await callback.message.edit_text(
         text,
-        reply_markup=habit_detail_keyboard(habit, is_marathon),
+        reply_markup=habit_detail_keyboard(habit, lang, is_marathon),
         parse_mode="Markdown"
     )
     await callback.answer()
@@ -433,20 +442,20 @@ async def view_habit(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("habit_delete_"))
 async def delete_habit_confirm(callback: CallbackQuery):
     """Confirm habit deletion."""
+    lang = await db.get_user_language(callback.from_user.id)
     habit_id = int(callback.data.split("_")[2])
     habit = await db.get_habit(habit_id)
 
     if habit.get('marathon_id'):
         await callback.answer(
-            "Нельзя удалить привычку марафона. Выйди из марафона целиком.",
+            get_text("cant_delete_marathon_habit", lang),
             show_alert=True
         )
         return
 
     await callback.message.edit_text(
-        f"Удалить привычку **{habit['name']}**?\n\n"
-        "⚠️ Вся история и страйки будут удалены!",
-        reply_markup=confirm_keyboard("delete_habit", habit_id),
+        get_text("delete_habit_confirm", lang, name=habit['name']),
+        reply_markup=confirm_keyboard("delete_habit", habit_id, lang),
         parse_mode="Markdown"
     )
     await callback.answer()
@@ -455,12 +464,12 @@ async def delete_habit_confirm(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("confirm_delete_habit_"))
 async def delete_habit_confirmed(callback: CallbackQuery):
     """Delete habit."""
+    lang = await db.get_user_language(callback.from_user.id)
     habit_id = int(callback.data.split("_")[3])
     await db.delete_habit(habit_id)
 
-    await callback.message.edit_text("✅ Привычка удалена")
+    await callback.message.edit_text(get_text("habit_deleted", lang))
 
-    lang = await db.get_user_language(callback.from_user.id)
     habits = await db.get_user_habits(callback.from_user.id)
     await callback.message.answer(
         get_text("your_habits_short", lang),
@@ -473,35 +482,35 @@ async def delete_habit_confirmed(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("habit_edit_"))
 async def edit_habit_menu(callback: CallbackQuery):
     """Show habit edit options."""
+    lang = await db.get_user_language(callback.from_user.id)
     habit_id = int(callback.data.split("_")[2])
     habit = await db.get_habit(habit_id)
 
     if not habit:
-        await callback.answer("Привычка не найдена", show_alert=True)
+        await callback.answer(get_text("habit_not_found", lang), show_alert=True)
         return
 
     from aiogram.utils.keyboard import InlineKeyboardBuilder
     builder = InlineKeyboardBuilder()
 
     builder.row(InlineKeyboardButton(
-        text="✏️ Изменить название",
+        text=get_text("edit_name_btn", lang),
         callback_data=f"edit_name_{habit_id}"
     ))
 
     if habit['habit_type'] == 'numeric':
         builder.row(InlineKeyboardButton(
-            text="🎯 Изменить цель",
+            text=get_text("edit_goal_btn", lang),
             callback_data=f"edit_goal_{habit_id}"
         ))
 
     builder.row(InlineKeyboardButton(
-        text="« Назад",
+        text=get_text("btn_back", lang),
         callback_data=f"habit_view_{habit_id}"
     ))
 
     await callback.message.edit_text(
-        f"✏️ Редактирование: **{habit['name']}**\n\n"
-        f"Что изменить?",
+        get_text("edit_habit", lang, name=habit['name']),
         reply_markup=builder.as_markup(),
         parse_mode="Markdown"
     )
@@ -516,29 +525,30 @@ class EditHabitStates(StatesGroup):
 @router.callback_query(F.data.startswith("edit_name_"))
 async def edit_habit_name_start(callback: CallbackQuery, state: FSMContext):
     """Start editing habit name."""
+    lang = await db.get_user_language(callback.from_user.id)
     habit_id = int(callback.data.split("_")[2])
     await state.update_data(editing_habit_id=habit_id)
     await state.set_state(EditHabitStates.waiting_new_name)
 
-    await callback.message.edit_text("Введи новое название привычки:")
+    await callback.message.edit_text(get_text("enter_new_name", lang))
     await callback.answer()
 
 
 @router.message(EditHabitStates.waiting_new_name)
 async def edit_habit_name_done(message: Message, state: FSMContext):
     """Save new habit name."""
+    lang = await db.get_user_language(message.from_user.id)
     data = await state.get_data()
     habit_id = data['editing_habit_id']
 
     await db.update_habit(habit_id, name=message.text)
     await state.clear()
 
-    await message.answer(f"✅ Название изменено на: **{message.text}**", parse_mode="Markdown")
+    await message.answer(get_text("name_changed", lang, name=message.text), parse_mode="Markdown")
 
-    habit = await db.get_habit(habit_id)
     habits = await db.get_user_habits(message.from_user.id)
     await message.answer(
-        "📝 Твои привычки:",
+        get_text("your_habits_short", lang),
         reply_markup=habits_keyboard(habits, lang)
     )
 
@@ -546,6 +556,7 @@ async def edit_habit_name_done(message: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("edit_goal_"))
 async def edit_habit_goal_start(callback: CallbackQuery, state: FSMContext):
     """Start editing habit goal."""
+    lang = await db.get_user_language(callback.from_user.id)
     habit_id = int(callback.data.split("_")[2])
     habit = await db.get_habit(habit_id)
 
@@ -553,8 +564,7 @@ async def edit_habit_goal_start(callback: CallbackQuery, state: FSMContext):
     await state.set_state(EditHabitStates.waiting_new_goal)
 
     await callback.message.edit_text(
-        f"Текущая цель: {habit['daily_goal']} {habit.get('unit', '')}\n\n"
-        f"Введи новую дневную цель (число):"
+        get_text("current_goal", lang, goal=habit['daily_goal'], unit=habit.get('unit', ''))
     )
     await callback.answer()
 
@@ -562,6 +572,7 @@ async def edit_habit_goal_start(callback: CallbackQuery, state: FSMContext):
 @router.message(EditHabitStates.waiting_new_goal)
 async def edit_habit_goal_done(message: Message, state: FSMContext):
     """Save new habit goal."""
+    lang = await db.get_user_language(message.from_user.id)
     try:
         new_goal = float(message.text.replace(",", "."))
         data = await state.get_data()
@@ -570,15 +581,15 @@ async def edit_habit_goal_done(message: Message, state: FSMContext):
         await db.update_habit(habit_id, daily_goal=new_goal)
         await state.clear()
 
-        await message.answer(f"✅ Цель изменена на: **{new_goal}**", parse_mode="Markdown")
+        await message.answer(get_text("goal_changed", lang, goal=new_goal), parse_mode="Markdown")
 
         habits = await db.get_user_habits(message.from_user.id)
         await message.answer(
-            "📝 Твои привычки:",
+            get_text("your_habits_short", lang),
             reply_markup=habits_keyboard(habits, lang)
         )
     except ValueError:
-        await message.answer("Введи число. Например: 5 или 2.5")
+        await message.answer(get_text("enter_number_example", lang))
 
 
 # ============ Quick Log ============
@@ -607,11 +618,12 @@ async def quick_log_menu(message: Message):
 @router.callback_query(F.data.startswith("habit_log_"))
 async def start_log_habit(callback: CallbackQuery, state: FSMContext):
     """Start logging a habit."""
+    lang = await db.get_user_language(callback.from_user.id)
     habit_id = int(callback.data.split("_")[-1])
     habit = await db.get_habit(habit_id)
 
     if not habit:
-        await callback.answer("Привычка не найдена", show_alert=True)
+        await callback.answer(get_text("habit_not_found", lang), show_alert=True)
         return
 
     await state.update_data(logging_habit_id=habit_id)
@@ -621,16 +633,16 @@ async def start_log_habit(callback: CallbackQuery, state: FSMContext):
 
     if habit['habit_type'] == 'boolean':
         await callback.message.edit_text(
-            f"**{habit['name']}**\n\nВыполнено сегодня?",
-            reply_markup=boolean_input_keyboard(habit_id),
+            f"**{habit['name']}**\n\n" + get_text("completed_today_q", lang),
+            reply_markup=boolean_input_keyboard(habit_id, lang),
             parse_mode="Markdown"
         )
     else:
         await callback.message.edit_text(
-            f"**{habit['name']}**\n\n"
-            f"Сейчас: {today_value}/{habit['daily_goal']} {habit['unit']}\n\n"
-            f"Сколько добавить?",
-            reply_markup=numeric_quick_input_keyboard(habit_id, habit['unit']),
+            f"**{habit['name']}**\n\n" +
+            get_text("current_progress", lang, current=today_value, goal=habit['daily_goal'], unit=habit['unit']) + "\n\n" +
+            get_text("how_much_add", lang),
+            reply_markup=numeric_quick_input_keyboard(habit_id, lang, habit['unit']),
             parse_mode="Markdown"
         )
 
@@ -646,18 +658,19 @@ async def log_boolean(callback: CallbackQuery, state: FSMContext):
 
     result = await db.log_habit(habit_id, callback.from_user.id, value)
     await db.mark_notification_responded(callback.from_user.id, habit_id)
+    await delete_notification_message(callback.bot, callback.from_user.id)
 
     lang = await db.get_user_language(callback.from_user.id)
-    status = "✅ Выполнено" if value else "❌ Не выполнено"
+    status = get_text("completed", lang) if value else get_text("not_completed", lang)
 
     # Get last comment if exists
     last_comment = await db.get_last_comment(habit_id)
-    last_comment_text = f"\n\n📝 Прошлая заметка: _{last_comment}_" if last_comment else ""
+    last_comment_text = f"\n\n" + get_text("last_note", lang, comment=last_comment) if last_comment else ""
 
-    comment_prompt = "Добавить заметку? (напр. стр. 150)" if lang == "ru" else "Жазба қосу? (мыс. бет 150)"
+    comment_prompt = get_text("add_note_prompt", lang)
 
     await callback.message.edit_text(
-        f"Принято! {status}\n\n"
+        f"{get_text('accepted', lang)} {status}\n\n"
         f"**{result['habit']['name']}**{last_comment_text}\n\n"
         f"💬 {comment_prompt}",
         reply_markup=comment_keyboard(habit_id, lang),
@@ -665,7 +678,7 @@ async def log_boolean(callback: CallbackQuery, state: FSMContext):
     )
     await state.update_data(comment_habit_id=habit_id)
     await state.set_state(HabitStates.waiting_comment)
-    await callback.answer("Записано!")
+    await callback.answer(get_text("recorded", lang))
 
 
 @router.callback_query(F.data.startswith("log_num_"))
@@ -677,6 +690,7 @@ async def log_numeric(callback: CallbackQuery, state: FSMContext):
 
     result = await db.log_habit(habit_id, callback.from_user.id, value)
     await db.mark_notification_responded(callback.from_user.id, habit_id)
+    await delete_notification_message(callback.bot, callback.from_user.id)
 
     lang = await db.get_user_language(callback.from_user.id)
     habit = result['habit']
@@ -688,12 +702,12 @@ async def log_numeric(callback: CallbackQuery, state: FSMContext):
 
     # Get last comment if exists
     last_comment = await db.get_last_comment(habit_id)
-    last_comment_text = f"\n\n📝 Прошлая заметка: _{last_comment}_" if last_comment else ""
+    last_comment_text = f"\n\n" + get_text("last_note", lang, comment=last_comment) if last_comment else ""
 
-    comment_prompt = "Добавить заметку? (напр. стр. 150)" if lang == "ru" else "Жазба қосу? (мыс. бет 150)"
+    comment_prompt = get_text("add_note_prompt", lang)
 
     await callback.message.edit_text(
-        f"Принято +{value} {unit}!\n\n"
+        get_text("accepted_plus", lang, value=value, unit=unit) + "\n\n"
         f"**{habit['name']}**: {new_value}/{goal} {unit} {status}{last_comment_text}\n\n"
         f"💬 {comment_prompt}",
         reply_markup=comment_keyboard(habit_id, lang),
@@ -707,6 +721,7 @@ async def log_numeric(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("log_custom_"))
 async def log_custom_start(callback: CallbackQuery, state: FSMContext):
     """Start custom value input."""
+    lang = await db.get_user_language(callback.from_user.id)
     habit_id = int(callback.data.split("_")[2])
     habit = await db.get_habit(habit_id)
 
@@ -714,8 +729,8 @@ async def log_custom_start(callback: CallbackQuery, state: FSMContext):
     await state.set_state(HabitStates.waiting_custom_value)
 
     await callback.message.edit_text(
-        f"**{habit['name']}**\n\n"
-        f"Введи число ({habit.get('unit', '')}):",
+        f"**{habit['name']}**\n\n" +
+        get_text("enter_number_unit", lang, name=habit['name'], unit=habit.get('unit', '')),
         parse_mode="Markdown"
     )
     await callback.answer()
@@ -724,6 +739,7 @@ async def log_custom_start(callback: CallbackQuery, state: FSMContext):
 @router.message(HabitStates.waiting_custom_value)
 async def log_custom_value(message: Message, state: FSMContext):
     """Log custom numeric value."""
+    lang = await db.get_user_language(message.from_user.id)
     try:
         value = float(message.text.replace(",", "."))
         data = await state.get_data()
@@ -731,8 +747,8 @@ async def log_custom_value(message: Message, state: FSMContext):
 
         result = await db.log_habit(habit_id, message.from_user.id, value)
         await db.mark_notification_responded(message.from_user.id, habit_id)
+        await delete_notification_message(message.bot, message.from_user.id)
 
-        lang = await db.get_user_language(message.from_user.id)
         habit = result['habit']
         new_value = result['new_value']
         goal = result['daily_goal']
@@ -742,12 +758,12 @@ async def log_custom_value(message: Message, state: FSMContext):
 
         # Get last comment if exists
         last_comment = await db.get_last_comment(habit_id)
-        last_comment_text = f"\n\n📝 Прошлая заметка: _{last_comment}_" if last_comment else ""
+        last_comment_text = f"\n\n" + get_text("last_note", lang, comment=last_comment) if last_comment else ""
 
-        comment_prompt = "Добавить заметку? (напр. стр. 150)" if lang == "ru" else "Жазба қосу? (мыс. бет 150)"
+        comment_prompt = get_text("add_note_prompt", lang)
 
         await message.answer(
-            f"Принято +{value} {unit}!\n\n"
+            get_text("accepted_plus", lang, value=value, unit=unit) + "\n\n"
             f"**{habit['name']}**: {new_value}/{goal} {unit} {status}{last_comment_text}\n\n"
             f"💬 {comment_prompt}",
             reply_markup=comment_keyboard(habit_id, lang),
@@ -757,7 +773,7 @@ async def log_custom_value(message: Message, state: FSMContext):
         await state.set_state(HabitStates.waiting_comment)
 
     except ValueError:
-        await message.answer("Пожалуйста, введи число. Например: 2.5")
+        await message.answer(get_text("enter_number", lang))
 
 
 # ============ Comment Handlers ============
@@ -779,8 +795,7 @@ async def save_comment(message: Message, state: FSMContext):
         await db.update_log_comment(habit_id, message.text)
 
         lang = await db.get_user_language(message.from_user.id)
-        saved_text = "📝 Заметка сохранена!" if lang == "ru" else "📝 Жазба сақталды!"
-        await message.answer(saved_text)
+        await message.answer(get_text("note_saved", lang))
 
     await state.clear()
 
@@ -789,6 +804,7 @@ async def save_comment(message: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("notif_resp_"))
 async def notification_response(callback: CallbackQuery):
     """Handle notification response."""
+    lang = await db.get_user_language(callback.from_user.id)
     parts = callback.data.split("_")
     habit_id = int(parts[2])
     value = float(parts[3])
@@ -801,29 +817,30 @@ async def notification_response(callback: CallbackQuery):
     goal = result['daily_goal']
 
     if habit['habit_type'] == 'boolean':
-        status = "✅ Выполнено" if value else "❌ Не выполнено"
-        await callback.message.edit_text(f"Принято! {status}")
+        status = get_text("completed", lang) if value else get_text("not_completed", lang)
+        await callback.message.edit_text(f"{get_text('accepted', lang)} {status}")
     else:
         unit = habit.get('unit', '')
         status = "✅" if new_value >= goal else ""
         await callback.message.edit_text(
-            f"Принято +{value} {unit}!\n"
-            f"Итого за сегодня: {new_value}/{goal} {unit} {status}"
+            get_text("accepted_plus", lang, value=value, unit=unit) + "\n" +
+            get_text("total_today", lang, value=new_value, goal=goal, unit=unit) + " " + status
         )
 
-    await callback.answer("Записано вовремя! ⏱")
+    await callback.answer(get_text("recorded_on_time", lang))
 
 
 @router.callback_query(F.data.startswith("notif_custom_"))
 async def notification_custom_input(callback: CallbackQuery, state: FSMContext):
     """Start custom input from notification."""
+    lang = await db.get_user_language(callback.from_user.id)
     habit_id = int(callback.data.split("_")[2])
     await state.update_data(logging_habit_id=habit_id)
     await state.set_state(HabitStates.waiting_custom_value)
 
     habit = await db.get_habit(habit_id)
     await callback.message.edit_text(
-        f"**{habit['name']}**\n\nВведи число:",
+        f"**{habit['name']}**\n\n" + get_text("enter_number_prompt", lang),
         parse_mode="Markdown"
     )
     await callback.answer()
@@ -848,13 +865,13 @@ async def show_categories(message: Message):
                 streak = f" 🔥{h['streak']}" if h['streak'] > 0 else ""
                 text += f"  • {h['name']}{streak}\n"
         else:
-            text += f"  _(пусто)_\n"
+            text += f"  {get_text('empty_label', lang)}\n"
         text += "\n"
 
     # Habits without category
     no_cat_habits = [h for h in habits if h.get('category_id') is None]
     if no_cat_habits:
-        text += "**📌 Без категории**\n"
+        text += f"**{get_text('no_category_title', lang)}**\n"
         for h in no_cat_habits:
             streak = f" 🔥{h['streak']}" if h['streak'] > 0 else ""
             text += f"  • {h['name']}{streak}\n"
@@ -870,7 +887,7 @@ async def show_categories(message: Message):
         ))
 
     builder.row(InlineKeyboardButton(
-        text="« Главное меню",
+        text=get_text("back_to_main_menu", lang),
         callback_data="back_to_menu"
     ))
 
@@ -884,13 +901,14 @@ async def show_categories(message: Message):
 @router.callback_query(F.data.startswith("cat_view_"))
 async def view_category(callback: CallbackQuery):
     """View habits in a category."""
+    lang = await db.get_user_language(callback.from_user.id)
     cat_id = int(callback.data.split("_")[2])
     categories = await db.get_user_categories(callback.from_user.id)
     habits = await db.get_user_habits(callback.from_user.id)
 
     cat = next((c for c in categories if c['id'] == cat_id), None)
     if not cat:
-        await callback.answer("Категория не найдена", show_alert=True)
+        await callback.answer(get_text("category_not_found", lang), show_alert=True)
         return
 
     cat_habits = [h for h in habits if h.get('category_id') == cat_id]
@@ -901,17 +919,17 @@ async def view_category(callback: CallbackQuery):
         for h in cat_habits:
             streak = f" 🔥{h['streak']}" if h['streak'] > 0 else ""
             if h['habit_type'] == 'numeric':
-                text += f"• {h['name']} (цель: {h['daily_goal']} {h.get('unit', '')}){streak}\n"
+                text += f"• {h['name']} ({get_text('goal_label', lang, goal=h['daily_goal'], unit=h.get('unit', ''))}){streak}\n"
             else:
                 text += f"• {h['name']}{streak}\n"
     else:
-        text += "_(В этой категории пока нет привычек)_"
+        text += f"_{get_text('no_habits_in_category', lang)}_"
 
     from aiogram.utils.keyboard import InlineKeyboardBuilder
     builder = InlineKeyboardBuilder()
 
     builder.row(InlineKeyboardButton(
-        text="« Назад к категориям",
+        text=get_text("back_categories", lang),
         callback_data="back_to_categories"
     ))
 
@@ -926,10 +944,11 @@ async def view_category(callback: CallbackQuery):
 @router.callback_query(F.data == "back_to_categories")
 async def back_to_categories(callback: CallbackQuery):
     """Return to categories list."""
+    lang = await db.get_user_language(callback.from_user.id)
     categories = await db.get_user_categories(callback.from_user.id)
     habits = await db.get_user_habits(callback.from_user.id)
 
-    text = "📁 **Твои категории:**\n\n"
+    text = get_text("your_categories_title", lang) + "\n\n"
 
     for cat in categories:
         text += f"**{cat['icon']} {cat['name']}**\n"
@@ -939,12 +958,12 @@ async def back_to_categories(callback: CallbackQuery):
                 streak = f" 🔥{h['streak']}" if h['streak'] > 0 else ""
                 text += f"  • {h['name']}{streak}\n"
         else:
-            text += f"  _(пусто)_\n"
+            text += f"  {get_text('empty_label', lang)}\n"
         text += "\n"
 
     no_cat_habits = [h for h in habits if h.get('category_id') is None]
     if no_cat_habits:
-        text += "**📌 Без категории**\n"
+        text += f"**{get_text('no_category_title', lang)}**\n"
         for h in no_cat_habits:
             streak = f" 🔥{h['streak']}" if h['streak'] > 0 else ""
             text += f"  • {h['name']}{streak}\n"
@@ -959,7 +978,7 @@ async def back_to_categories(callback: CallbackQuery):
         ))
 
     builder.row(InlineKeyboardButton(
-        text="« Главное меню",
+        text=get_text("back_to_main_menu", lang),
         callback_data="back_to_menu"
     ))
 
@@ -974,9 +993,10 @@ async def back_to_categories(callback: CallbackQuery):
 @router.callback_query(F.data == "cat_create")
 async def create_category_start(callback: CallbackQuery, state: FSMContext):
     """Start category creation."""
+    lang = await db.get_user_language(callback.from_user.id)
     await callback.message.edit_text(
-        "Введи название новой категории:",
-        reply_markup=cancel_keyboard()
+        get_text("enter_category_name_prompt", lang),
+        reply_markup=cancel_keyboard(lang)
     )
     await state.set_state(CategoryStates.waiting_name)
     await callback.answer()
@@ -985,14 +1005,15 @@ async def create_category_start(callback: CallbackQuery, state: FSMContext):
 @router.message(CategoryStates.waiting_name)
 async def create_category_name(message: Message, state: FSMContext):
     """Create category with name."""
+    lang = await db.get_user_language(message.from_user.id)
     if message.text and is_menu_button(message.text):
-        await message.answer("Введи название категории:")
+        await message.answer(get_text("enter_category_name_prompt", lang))
         return
 
     await db.create_category(message.from_user.id, message.text)
     await state.clear()
 
-    await message.answer(f"✅ Категория **{message.text}** создана!", parse_mode="Markdown")
+    await message.answer(get_text("category_created_msg", lang, name=message.text), parse_mode="Markdown")
 
     categories = await db.get_user_categories(message.from_user.id)
 
@@ -1006,16 +1027,16 @@ async def create_category_name(message: Message, state: FSMContext):
         ))
 
     builder.row(InlineKeyboardButton(
-        text="➕ Новая категория",
+        text=get_text("new_category_btn", lang),
         callback_data="cat_create"
     ))
     builder.row(InlineKeyboardButton(
-        text="« Главное меню",
+        text=get_text("back_to_main_menu", lang),
         callback_data="back_to_menu"
     ))
 
     await message.answer(
-        "📁 Твои категории:",
+        get_text("your_categories_title", lang),
         reply_markup=builder.as_markup()
     )
 
@@ -1081,9 +1102,10 @@ async def set_language(callback: CallbackQuery):
 @router.callback_query(F.data == "settings_categories")
 async def settings_categories(callback: CallbackQuery):
     """Manage categories from settings."""
+    lang = await db.get_user_language(callback.from_user.id)
     categories = await db.get_user_categories(callback.from_user.id)
 
-    text = "📁 **Управление категориями:**\n\n"
+    text = get_text("manage_categories_title", lang) + "\n\n"
     for cat in categories:
         text += f"• {cat['icon']} {cat['name']}\n"
 
@@ -1097,11 +1119,11 @@ async def settings_categories(callback: CallbackQuery):
         ))
 
     builder.row(InlineKeyboardButton(
-        text="➕ Новая категория",
+        text=get_text("new_category_btn", lang),
         callback_data="cat_create"
     ))
     builder.row(InlineKeyboardButton(
-        text="« Назад",
+        text=get_text("btn_back", lang),
         callback_data="back_to_settings"
     ))
 
@@ -1116,14 +1138,15 @@ async def settings_categories(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("cat_delete_"))
 async def delete_category_confirm(callback: CallbackQuery):
     """Delete a category."""
+    lang = await db.get_user_language(callback.from_user.id)
     cat_id = int(callback.data.split("_")[2])
     await db.delete_category(cat_id)
-    await callback.answer("Категория удалена!")
+    await callback.answer(get_text("category_deleted_msg", lang))
 
     # Refresh categories list
     categories = await db.get_user_categories(callback.from_user.id)
 
-    text = "📁 **Управление категориями:**\n\n"
+    text = get_text("manage_categories_title", lang) + "\n\n"
     for cat in categories:
         text += f"• {cat['icon']} {cat['name']}\n"
 
@@ -1137,11 +1160,11 @@ async def delete_category_confirm(callback: CallbackQuery):
         ))
 
     builder.row(InlineKeyboardButton(
-        text="➕ Новая категория",
+        text=get_text("new_category_btn", lang),
         callback_data="cat_create"
     ))
     builder.row(InlineKeyboardButton(
-        text="« Назад",
+        text=get_text("btn_back", lang),
         callback_data="back_to_settings"
     ))
 
@@ -1155,18 +1178,18 @@ async def delete_category_confirm(callback: CallbackQuery):
 @router.callback_query(F.data == "settings_habits")
 async def settings_habits(callback: CallbackQuery):
     """Manage habits from settings."""
+    lang = await db.get_user_language(callback.from_user.id)
     habits = await db.get_user_habits(callback.from_user.id)
 
     if not habits:
         await callback.message.edit_text(
-            "📝 У тебя пока нет привычек.",
-            reply_markup=settings_keyboard()
+            get_text("no_habits_settings", lang),
+            reply_markup=settings_keyboard(lang)
         )
         await callback.answer()
         return
 
-    text = "📝 **Управление привычками:**\n\n"
-    text += "Выбери привычку для редактирования или удаления:"
+    text = get_text("manage_habits_title", lang)
 
     from aiogram.utils.keyboard import InlineKeyboardBuilder
     builder = InlineKeyboardBuilder()
@@ -1180,7 +1203,7 @@ async def settings_habits(callback: CallbackQuery):
         ))
 
     builder.row(InlineKeyboardButton(
-        text="« Назад",
+        text=get_text("btn_back", lang),
         callback_data="back_to_settings"
     ))
 
@@ -1195,11 +1218,12 @@ async def settings_habits(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("manage_habit_"))
 async def manage_habit_menu(callback: CallbackQuery):
     """Show habit management options."""
+    lang = await db.get_user_language(callback.from_user.id)
     habit_id = int(callback.data.split("_")[2])
     habit = await db.get_habit(habit_id)
 
     if not habit:
-        await callback.answer("Привычка не найдена", show_alert=True)
+        await callback.answer(get_text("habit_not_found", lang), show_alert=True)
         return
 
     is_marathon = habit.get('marathon_id') is not None
@@ -1208,34 +1232,37 @@ async def manage_habit_menu(callback: CallbackQuery):
     builder = InlineKeyboardBuilder()
 
     builder.row(InlineKeyboardButton(
-        text="✏️ Изменить название",
+        text=get_text("edit_name_btn", lang),
         callback_data=f"edit_name_{habit_id}"
     ))
 
     if habit['habit_type'] == 'numeric':
         builder.row(InlineKeyboardButton(
-            text="🎯 Изменить цель",
+            text=get_text("edit_goal_btn", lang),
             callback_data=f"edit_goal_{habit_id}"
         ))
 
     if is_marathon:
         builder.row(InlineKeyboardButton(
-            text="⚠️ Нельзя удалить (марафон)",
+            text=get_text("cannot_delete_marathon", lang),
             callback_data="ignore"
         ))
     else:
         builder.row(InlineKeyboardButton(
-            text="🗑 Удалить привычку",
+            text=get_text("delete_habit_btn", lang),
             callback_data=f"habit_delete_{habit_id}"
         ))
 
     builder.row(InlineKeyboardButton(
-        text="« Назад к списку",
+        text=get_text("back_to_list", lang),
         callback_data="settings_habits"
     ))
 
-    streak_text = f"🔥 Страйк: {habit['streak']} дней" if habit['streak'] > 0 else ""
-    goal_text = f"Цель: {habit['daily_goal']} {habit.get('unit', '')}" if habit['habit_type'] == 'numeric' else "Тип: Галочка"
+    streak_text = get_text("streak_label", lang, streak=habit['streak']) if habit['streak'] > 0 else ""
+    if habit['habit_type'] == 'numeric':
+        goal_text = get_text("goal_label", lang, goal=habit['daily_goal'], unit=habit.get('unit', ''))
+    else:
+        goal_text = get_text("type_checkbox", lang)
 
     await callback.message.edit_text(
         f"⚙️ **{habit['name']}**\n\n"

@@ -74,7 +74,7 @@ def habits_categories_keyboard(categories: List[dict], habits: List[dict], lang:
         ))
 
     # Show all habits button
-    all_habits_text = "📋 Все привычки" if lang == "ru" else "📋 Барлық әдеттер"
+    all_habits_text = get_text("all_habits", lang)
     builder.row(InlineKeyboardButton(
         text=f"{all_habits_text} ({len(habits)})",
         callback_data="habits_cat_all"
@@ -111,9 +111,8 @@ def habits_in_category_keyboard(habits: List[dict], category_id: Optional[int], 
     ))
 
     # Back to categories
-    back_text = "« Категории" if lang == "ru" else "« Санаттар"
     builder.row(InlineKeyboardButton(
-        text=back_text,
+        text=get_text("back_categories", lang),
         callback_data="back_to_habits"
     ))
 
@@ -133,9 +132,8 @@ def habit_detail_keyboard(habit: dict, lang: str = "kk", is_marathon: bool = Fal
         callback_data=f"habit_stats_{habit['id']}"
     ))
 
-    back_text = "« " + (get_text("btn_my_habits", lang).replace("📝 ", "") if lang == "kk" else "Назад к привычкам")
     builder.row(InlineKeyboardButton(
-        text=back_text,
+        text=get_text("back_categories", lang),
         callback_data="back_to_habits"
     ))
 
@@ -206,7 +204,7 @@ def boolean_input_keyboard(habit_id: int, lang: str = "kk") -> InlineKeyboardMar
 def comment_keyboard(habit_id: int, lang: str = "kk") -> InlineKeyboardMarkup:
     """Keyboard for optional comment after logging."""
     builder = InlineKeyboardBuilder()
-    skip_text = "⏭ Пропустить" if lang == "ru" else "⏭ Өткізіп жіберу"
+    skip_text = "⏭ Өткізіп жіберу" if lang == "kk" else "⏭ Пропустить"
     builder.row(InlineKeyboardButton(
         text=skip_text,
         callback_data=f"skip_comment_{habit_id}"
@@ -242,6 +240,31 @@ def confirm_keyboard(action: str, item_id: int, lang: str = "kk") -> InlineKeybo
         InlineKeyboardButton(text=yes_delete, callback_data=f"confirm_{action}_{item_id}"),
         InlineKeyboardButton(text=get_text("btn_cancel", lang), callback_data="back_to_habits")
     )
+    return builder.as_markup()
+
+
+def notification_response_keyboard(habit_id: int, habit_type: str, lang: str = "kk") -> InlineKeyboardMarkup:
+    """Keyboard for notification response."""
+    builder = InlineKeyboardBuilder()
+
+    if habit_type == 'boolean':
+        completed_text = get_text("completed", lang)
+        builder.row(
+            InlineKeyboardButton(text=completed_text, callback_data=f"notif_resp_{habit_id}_1"),
+            InlineKeyboardButton(text=get_text("btn_no", lang), callback_data=f"notif_resp_{habit_id}_0")
+        )
+    else:
+        builder.row(
+            InlineKeyboardButton(text="+1", callback_data=f"notif_resp_{habit_id}_1"),
+            InlineKeyboardButton(text="+2", callback_data=f"notif_resp_{habit_id}_2"),
+            InlineKeyboardButton(text="+5", callback_data=f"notif_resp_{habit_id}_5"),
+        )
+        enter_text = "✏️ Санды енгіз" if lang == "kk" else "✏️ Ввести число"
+        builder.row(InlineKeyboardButton(
+            text=enter_text,
+            callback_data=f"notif_custom_{habit_id}"
+        ))
+
     return builder.as_markup()
 
 
@@ -376,7 +399,7 @@ def stats_habits_keyboard(habits: List[dict], lang: str = "kk") -> InlineKeyboar
     return builder.as_markup()
 
 
-def calendar_keyboard(year: int, month: int, lang: str = "kk", prefix: str = "cal") -> InlineKeyboardMarkup:
+def calendar_keyboard(year: int, month: int, prefix: str = "cal", lang: str = "kk") -> InlineKeyboardMarkup:
     """Calendar for date selection."""
     import calendar
 
@@ -493,31 +516,6 @@ def log_habits_keyboard(habits: List[dict], lang: str = "kk") -> InlineKeyboardM
         text=get_text("btn_back_menu", lang),
         callback_data="back_to_menu"
     ))
-
-    return builder.as_markup()
-
-
-def notification_response_keyboard(habit_id: int, habit_type: str, lang: str = "kk") -> InlineKeyboardMarkup:
-    """Keyboard for notification response."""
-    builder = InlineKeyboardBuilder()
-
-    if habit_type == 'boolean':
-        completed_text = "✅ " + ("Орындалды" if lang == "kk" else "Выполнено")
-        builder.row(
-            InlineKeyboardButton(text=completed_text, callback_data=f"notif_resp_{habit_id}_1"),
-            InlineKeyboardButton(text=get_text("btn_no", lang), callback_data=f"notif_resp_{habit_id}_0")
-        )
-    else:
-        builder.row(
-            InlineKeyboardButton(text="+1", callback_data=f"notif_resp_{habit_id}_1"),
-            InlineKeyboardButton(text="+2", callback_data=f"notif_resp_{habit_id}_2"),
-            InlineKeyboardButton(text="+5", callback_data=f"notif_resp_{habit_id}_5"),
-        )
-        enter_text = "✏️ " + ("Санды енгіз" if lang == "kk" else "Ввести число")
-        builder.row(InlineKeyboardButton(
-            text=enter_text,
-            callback_data=f"notif_custom_{habit_id}"
-        ))
 
     return builder.as_markup()
 

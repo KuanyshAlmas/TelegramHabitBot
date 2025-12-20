@@ -4,8 +4,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 import pytz
 import database as db
-from keyboards import notification_response_keyboard
-from texts import get_text
+from keyboards import log_habits_keyboard
+from texts import get_text, TEXTS
 
 # Kazakhstan timezone (UTC+5 for most of Kazakhstan / UTC+6 for some regions)
 # Using Almaty timezone (UTC+5)
@@ -21,41 +21,29 @@ def set_bot(bot):
     bot_instance = bot
 
 
-async def send_habit_notification(user_id: int, habit: dict):
-    """Send notification for a single habit."""
-    if not bot_instance:
+async def send_consolidated_notification(user_id: int, uncompleted_habits: list):
+    """Send ONE notification with all uncompleted habits."""
+    if not bot_instance or not uncompleted_habits:
         return
 
     try:
         lang = await db.get_user_language(user_id)
-        habit_type = habit['habit_type']
-        unit = habit.get('unit', '')
-        goal = habit['daily_goal']
 
-        if lang == "kk":
-            if habit_type == 'boolean':
-                text = f"🔔 **Есеп беру уақыты!**\n\n"
-                text += f"Әдет: **{habit['name']}**\n"
-                text += f"Бүгін орындалды ма?\n\n"
-                text += f"⏱ Жауап беруге 10 минут бар."
-            else:
-                text = f"🔔 **Есеп беру уақыты!**\n\n"
-                text += f"Әдет: **{habit['name']}**\n"
-                text += f"Күнделікті мақсат: {goal} {unit}\n\n"
-                text += f"⏱ Жауап беруге 10 минут бар."
-        else:
-            if habit_type == 'boolean':
-                text = f"🔔 **Пора сдать отчет!**\n\n"
-                text += f"Привычка: **{habit['name']}**\n"
-                text += f"Выполнено сегодня?\n\n"
-                text += f"⏱ У тебя есть 10 минут на ответ."
-            else:
-                text = f"🔔 **Пора сдать отчет!**\n\n"
-                text += f"Привычка: **{habit['name']}**\n"
-                text += f"Цель на день: {goal} {unit}\n\n"
-                text += f"⏱ У тебя есть 10 минут на ответ."
+        text = get_text("report_time", lang) + "\n\n"
+        text += get_text("uncompleted_habits", lang) + "\n"
 
-        keyboard = notification_response_keyboard(habit['id'], habit_type, lang)
+        for habit in uncompleted_habits:
+            if habit['habit_type'] == 'boolean':
+                text += f"• {habit['name']}\n"
+            else:
+                unit = habit.get('unit', '')
+                goal_text = get_text("goal_label", lang, goal=habit['daily_goal'], unit=unit)
+                text += f"• {habit['name']} ({goal_text})\n"
+
+        text += "\n" + get_text("response_time", lang)
+
+        # Use log_habits_keyboard to show all habits
+        keyboard = log_habits_keyboard(uncompleted_habits, lang)
 
         msg = await bot_instance.send_message(
             user_id,
@@ -64,9 +52,10 @@ async def send_habit_notification(user_id: int, habit: dict):
             parse_mode="Markdown"
         )
 
-        # Create pending notification with 10-min expiry (store message_id for deletion)
+        # Create pending notification (store message_id for deletion)
         expires_at = datetime.now(KZ_TZ) + timedelta(minutes=10)
-        await db.create_pending_notification(user_id, habit['id'], expires_at, msg.message_id, user_id)
+        # Use first habit's id as reference, but store message for deletion
+        await db.create_pending_notification(user_id, uncompleted_habits[0]['id'], expires_at, msg.message_id, user_id)
 
     except Exception as e:
         print(f"Error sending notification to {user_id}: {e}")
@@ -82,14 +71,17 @@ async def check_notifications_for_time(check_time: str):
         if check_time in user_times:
             habits = await db.get_user_habits(user['user_id'])
 
+            # Collect uncompleted habits
+            uncompleted = []
             for habit in habits:
-                # Check if already completed today
                 log = await db.get_daily_log(habit['id'])
-                if log and log['completed']:
-                    continue
+                if not log or not log['completed']:
+                    uncompleted.append(habit)
 
-                await send_habit_notification(user['user_id'], habit)
-                await asyncio.sleep(0.1)  # Small delay between messages
+            # Send ONE notification with all uncompleted habits
+            if uncompleted:
+                await send_consolidated_notification(user['user_id'], uncompleted)
+                await asyncio.sleep(0.1)
 
 
 async def check_expired_notifications():
@@ -105,8 +97,12 @@ async def check_expired_notifications():
                 except Exception:
                     pass  # Message may already be deleted
 
-            # Log zero for this habit
-            await db.log_habit(notif['habit_id'], notif['user_id'], 0)
+            # Log zero for ALL uncompleted habits of this user
+            habits = await db.get_user_habits(notif['user_id'])
+            for habit in habits:
+                log = await db.get_daily_log(habit['id'])
+                if not log or not log['completed']:
+                    await db.log_habit(habit['id'], notif['user_id'], 0)
 
         except Exception as e:
             print(f"Error processing expired notification: {e}")
@@ -124,11 +120,12 @@ async def process_end_of_day():
 
     for user in users:
         try:
+            lang = await db.get_user_language(user['user_id'])
             habits = await db.get_user_habits(user['user_id'])
             if not habits:
                 continue
 
-            report_lines = ["🌙 **Итоги дня (23:59):**\n"]
+            report_lines = [get_text("end_of_day_title", lang) + "\n"]
             streak_updates = []
 
             for habit in habits:
@@ -141,7 +138,7 @@ async def process_end_of_day():
                 new_streak, _ = await db.update_streak(habit['id'], completed)
 
                 if habit['habit_type'] == 'boolean':
-                    status = "✅ Выполнено" if completed else "❌ Не выполнено"
+                    status = get_text("done_label", lang) if completed else get_text("not_done_label", lang)
                     report_lines.append(f"• {habit['name']}: {status}")
                 else:
                     unit = habit.get('unit', '')
@@ -150,9 +147,9 @@ async def process_end_of_day():
 
                 # Streak message
                 if completed and new_streak > 1:
-                    streak_updates.append(f"🔥 {habit['name']}: {new_streak} дней подряд!")
+                    streak_updates.append(get_text("streak_fire", lang, name=habit['name'], streak=new_streak))
                 elif not completed and habit['streak'] > 0:
-                    streak_updates.append(f"💔 {habit['name']}: огонек погас...")
+                    streak_updates.append(get_text("streak_lost", lang, name=habit['name']))
 
                 # Update marathon points if applicable
                 if habit.get('marathon_id') and completed:
@@ -188,22 +185,23 @@ async def send_weekly_report():
 
     for user in users:
         try:
+            lang = await db.get_user_language(user['user_id'])
             report = await db.get_weekly_report(user['user_id'], week_start)
 
             if not report['habits']:
                 continue
 
-            text = f"📊 **Отчет за неделю**\n"
+            text = get_text("weekly_report_title", lang) + "\n"
             text += f"({week_start.strftime('%d.%m')} - {today.strftime('%d.%m')})\n\n"
 
             for habit_stats in report['habits']:
                 habit = habit_stats['habit']
                 if habit['habit_type'] == 'boolean':
-                    text += f"• {habit['name']}: {habit_stats['completed_days']}/7 дней "
-                    text += f"({habit_stats['efficiency']}%)\n"
+                    text += f"• {habit['name']}: " + get_text("days_out_of", lang, completed=habit_stats['completed_days'])
+                    text += f" ({habit_stats['efficiency']}%)\n"
                 else:
                     text += f"• {habit['name']}: {habit_stats['total_value']} {habit.get('unit', '')}\n"
-                    text += f"  (в среднем {habit_stats['average']} в день)\n"
+                    text += f"  " + get_text("average_per_day", lang, avg=habit_stats['average']) + "\n"
 
             await bot_instance.send_message(user['user_id'], text, parse_mode="Markdown")
 
@@ -224,17 +222,17 @@ async def send_monthly_report():
     last_of_prev_month = first_of_this_month - timedelta(days=1)
     first_of_prev_month = last_of_prev_month.replace(day=1)
 
-    months_ru = ["", "января", "февраля", "марта", "апреля", "мая", "июня",
-                 "июля", "августа", "сентября", "октября", "ноября", "декабря"]
-
     for user in users:
         try:
+            lang = await db.get_user_language(user['user_id'])
             habits = await db.get_user_habits(user['user_id'])
 
             if not habits:
                 continue
 
-            text = f"📅 **Отчет за {months_ru[last_of_prev_month.month]}**\n\n"
+            months_genitive = get_text("months_genitive", lang)
+            month_name = months_genitive[last_of_prev_month.month - 1]
+            text = get_text("monthly_report_title", lang, month=month_name) + "\n\n"
 
             for habit in habits:
                 stats = await db.get_habit_stats(
@@ -245,15 +243,15 @@ async def send_monthly_report():
 
                 if habit['habit_type'] == 'boolean':
                     text += f"**{habit['name']}**\n"
-                    text += f"• Выполнено: {stats['completed_days']} из {stats['total_days']} дней\n"
-                    text += f"• Эффективность: {stats['efficiency']}%\n\n"
+                    text += get_text("completed_out_of", lang, completed=stats['completed_days'], total=stats['total_days']) + "\n"
+                    text += get_text("efficiency_percent", lang, percent=stats['efficiency']) + "\n\n"
                 else:
                     text += f"**{habit['name']}**\n"
-                    text += f"• Всего: {stats['total_value']} {habit.get('unit', '')}\n"
-                    text += f"• В среднем: {stats['average']} в день\n"
+                    text += get_text("total_amount", lang, total=stats['total_value'], unit=habit.get('unit', '')) + "\n"
+                    text += get_text("average_per_day_stat", lang, avg=stats['average']) + "\n"
                     if stats['best_day']:
                         best_date = stats['best_day']['log_date']
-                        text += f"• Лучший день: {stats['best_day']['value']} ({best_date})\n"
+                        text += get_text("best_day_stat", lang, value=stats['best_day']['value'], date=best_date) + "\n"
                     text += "\n"
 
             await bot_instance.send_message(user['user_id'], text, parse_mode="Markdown")

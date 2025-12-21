@@ -53,9 +53,8 @@ async def send_consolidated_notification(user_id: int, uncompleted_habits: list)
         )
 
         # Create pending notification (store message_id for deletion)
-        expires_at = datetime.now(KZ_TZ) + timedelta(minutes=10)
         # Use first habit's id as reference, but store message for deletion
-        await db.create_pending_notification(user_id, uncompleted_habits[0]['id'], expires_at, msg.message_id, user_id)
+        await db.create_pending_notification(user_id, uncompleted_habits[0]['id'], msg.message_id, user_id)
 
     except Exception as e:
         print(f"Error sending notification to {user_id}: {e}")

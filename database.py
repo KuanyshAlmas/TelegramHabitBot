@@ -478,13 +478,13 @@ async def update_streak(habit_id: int, completed: bool):
 
 # ============ PENDING NOTIFICATION FUNCTIONS ============
 
-async def create_pending_notification(user_id: int, habit_id: int, expires_at: datetime, message_id: int = None, chat_id: int = None):
-    """Create a pending notification."""
+async def create_pending_notification(user_id: int, habit_id: int, message_id: int = None, chat_id: int = None):
+    """Create a pending notification. Uses PostgreSQL NOW() for consistent timezone handling."""
     async with pool.acquire() as conn:
         await conn.execute(
             """INSERT INTO pending_notifications (user_id, habit_id, sent_at, expires_at, message_id, chat_id)
-               VALUES ($1, $2, $3, $4, $5, $6)""",
-            user_id, habit_id, datetime.now(), expires_at, message_id, chat_id
+               VALUES ($1, $2, NOW(), NOW() + INTERVAL '10 minutes', $3, $4)""",
+            user_id, habit_id, message_id, chat_id
         )
 
 
